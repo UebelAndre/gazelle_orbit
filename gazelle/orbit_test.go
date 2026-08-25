@@ -6,48 +6,80 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/bazelbuild/bazel-gazelle/rule"
 )
 
 func TestAssignRuleNames(t *testing.T) {
+	// Compact test-fixture helper: `foo.vhd` → vhdl_library entry,
+	// `foo.sv`/`foo.v` → verilog_library entry. Extension is what the
+	// production code sees anyway (kind is derived from fileset which is
+	// derived from extension), so no need to spell the kind out per case.
+	mk := func(relSrcs ...string) []ownedEntry {
+		out := make([]ownedEntry, len(relSrcs))
+		for i, rs := range relSrcs {
+			kind := kindVerilogLibrary
+			switch strings.ToLower(filepath.Ext(rs)) {
+			case ".vhd", ".vhdl":
+				kind = kindVhdlLibrary
+			}
+			out[i] = ownedEntry{kind: kind, relSrc: rs}
+		}
+		return out
+	}
 	cases := []struct {
-		name    string
-		relSrcs []string
-		want    []string
+		name  string
+		owned []ownedEntry
+		want  []string
 	}{
 		{
-			name:    "flat package uses bare names",
-			relSrcs: []string{"foo.vhd", "bar.v"},
-			want:    []string{"foo", "bar"},
+			name:  "flat package uses bare names",
+			owned: mk("foo.vhd", "bar.v"),
+			want:  []string{"foo", "bar"},
 		},
 		{
-			name:    "subdir sources default to bare names",
-			relSrcs: []string{"subdir/foo.vhd", "bar.v"},
-			want:    []string{"foo", "bar"},
+			name:  "subdir sources default to bare names",
+			owned: mk("subdir/foo.vhd", "bar.v"),
+			want:  []string{"foo", "bar"},
 		},
 		{
-			name:    "basename collision falls back to path-preserving names",
-			relSrcs: []string{"a/foo.vhd", "b/foo.vhd"},
-			want:    []string{"a/foo", "b/foo"},
+			name:  "basename collision falls back to path-preserving names",
+			owned: mk("a/foo.vhd", "b/foo.vhd"),
+			want:  []string{"a/foo", "b/foo"},
 		},
 		{
-			name:    "collision affects only the conflicting names",
-			relSrcs: []string{"a/foo.vhd", "b/foo.vhd", "unique.v"},
-			want:    []string{"a/foo", "b/foo", "unique"},
+			name:  "collision affects only the conflicting names",
+			owned: mk("a/foo.vhd", "b/foo.vhd", "unique.v"),
+			want:  []string{"a/foo", "b/foo", "unique"},
 		},
 		{
-			name:    "collision across extensions still collides on bare name",
-			relSrcs: []string{"foo.vhd", "sub/foo.v"},
-			want:    []string{"foo", "sub/foo"},
+			name:  "basename collision across extensions is resolved by path",
+			owned: mk("foo.vhd", "sub/foo.v"),
+			want:  []string{"foo", "sub/foo"},
+		},
+		{
+			name:  "same-dir vhdl and verilog collision uses language suffix",
+			owned: mk("foo.vhd", "foo.sv"),
+			want:  []string{"foo_vhdl", "foo_verilog"},
+		},
+		{
+			name:  "same-dir vhdl and verilog collision preserves subdir",
+			owned: mk("sub/foo.vhd", "sub/foo.sv"),
+			want:  []string{"sub/foo_vhdl", "sub/foo_verilog"},
+		},
+		{
+			name:  "language suffix combines with path when needed",
+			owned: mk("a/foo.sv", "a/foo.vhd", "b/foo.sv"),
+			want:  []string{"a/foo_verilog", "a/foo_vhdl", "b/foo"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := assignRuleNames(tc.relSrcs)
+			got := assignRuleNames(tc.owned)
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("assignRuleNames(%v) =\n  got %v\n want %v", tc.relSrcs, got, tc.want)
+				t.Errorf("assignRuleNames(%v) =\n  got %v\n want %v", tc.owned, got, tc.want)
 			}
 		})
 	}

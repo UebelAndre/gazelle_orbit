@@ -116,11 +116,7 @@ func (*orbitLang) GenerateRules(args language.GenerateArgs) language.GenerateRes
 			owned = append(owned, ownedEntry{entry: entry, kind: kind, relSrc: relSrc})
 		}
 
-		relSrcs := make([]string, 0, len(owned))
-		for _, o := range owned {
-			relSrcs = append(relSrcs, o.relSrc)
-		}
-		names := assignRuleNames(relSrcs)
+		names := assignRuleNames(owned)
 
 		for i, o := range owned {
 			entry := o.entry
@@ -215,29 +211,59 @@ func stripExt(s string) string {
 	return strings.TrimSuffix(s, filepath.Ext(s))
 }
 
-// assignRuleNames picks a Bazel target name for each srcs-relative path,
-// returned in the same order as `relSrcs`.
+// assignRuleNames picks a Bazel target name for each entry, returned in
+// the same order as `owned`.
 //
 // Default is the source basename without extension, so `subdir/foo.vhd`
 // becomes just `foo`. When two or more sources in the batch would
 // collapse to the same bare name, the affected entries fall back to
-// their path-preserving form (`subdir/foo`) so each remains unique.
-// Non-conflicting entries in the same batch are unaffected.
-func assignRuleNames(relSrcs []string) []string {
-	counts := map[string]int{}
-	for _, rs := range relSrcs {
-		counts[stripExt(filepath.Base(rs))]++
+// their path-preserving form (`subdir/foo`). If the path-preserving
+// form still collides — e.g. a VHDL and a (System)Verilog file share a
+// basename in the same directory (`foo.vhd` + `foo.sv`) — a language
+// suffix (`_vhdl` / `_verilog`) is appended to the still-conflicting
+// entries so each rule name is unique. Non-conflicting entries in the
+// same batch are unaffected.
+func assignRuleNames(owned []ownedEntry) []string {
+	bareCounts := map[string]int{}
+	for _, o := range owned {
+		bareCounts[stripExt(filepath.Base(o.relSrc))]++
 	}
-	out := make([]string, len(relSrcs))
-	for i, rs := range relSrcs {
-		bare := stripExt(filepath.Base(rs))
-		if counts[bare] > 1 {
-			out[i] = stripExt(rs)
-		} else {
-			out[i] = bare
+	pathCounts := map[string]int{}
+	for _, o := range owned {
+		if bareCounts[stripExt(filepath.Base(o.relSrc))] > 1 {
+			pathCounts[stripExt(o.relSrc)]++
 		}
 	}
+	out := make([]string, len(owned))
+	for i, o := range owned {
+		bare := stripExt(filepath.Base(o.relSrc))
+		if bareCounts[bare] == 1 {
+			out[i] = bare
+			continue
+		}
+		path := stripExt(o.relSrc)
+		if pathCounts[path] == 1 {
+			out[i] = path
+			continue
+		}
+		out[i] = path + kindLanguageSuffix(o.kind)
+	}
 	return out
+}
+
+// kindLanguageSuffix returns the disambiguating suffix appended to a
+// rule name when a bare/path-preserving name still collides across
+// languages — e.g. sibling `foo.vhd` and `foo.sv` become `foo_vhdl` and
+// `foo_verilog`.
+func kindLanguageSuffix(kind string) string {
+	switch kind {
+	case kindVhdlLibrary:
+		return "_vhdl"
+	case kindVerilogLibrary:
+		return "_verilog"
+	default:
+		return ""
+	}
 }
 
 // fileUnderBuildOwnership reports whether the absolute path `absFile`
